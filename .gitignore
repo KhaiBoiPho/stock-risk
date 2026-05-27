@@ -1,0 +1,41 @@
+# Secrets — KHÔNG BAO GIỜ commit
+.env
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual env
+.venv/
+venv/
+env/
+
+# Test / lint cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+*.egg-info/
+dist/
+build/
+
+# Runtime data (auto-generated, không cần commit)
+data/symbols.txt
+logs/
+*.log
+
+# Docker volumes (local only)
+redis-data/
+
+# IDE
+.vscode/
+.idea/
+*.swp
