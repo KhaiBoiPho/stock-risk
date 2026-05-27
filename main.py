@@ -1,10 +1,13 @@
 import asyncio
 import logging
 import signal
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from src.alerts.telegram import send_message
 from src.config.constants import VN_TIMEZONE
 from src.config.settings import get_settings
 from src.core.vma9 import update_vma9_all
@@ -71,6 +74,15 @@ async def main() -> None:
 
     scheduler.start()
     logger.info("Scheduler started — waiting for jobs")
+
+    now = datetime.now(ZoneInfo(VN_TIMEZONE))
+    weekday = ["Thứ 2","Thứ 3","Thứ 4","Thứ 5","Thứ 6","Thứ 7","Chủ nhật"][now.weekday()]
+    await send_message(
+        f"🤖 <b>Volume Spike Bot — {weekday} {now.strftime('%d/%m/%Y')}</b>\n"
+        f"   Theo dõi: {len(symbols)} mã HoSE\n"
+        f"   Khởi động lúc: {now.strftime('%H:%M:%S')}\n"
+        f"   VMA9 sẵn sàng — chờ phiên 09:15"
+    )
 
     stop_event = asyncio.Event()
 
