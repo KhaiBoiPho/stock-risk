@@ -1,18 +1,17 @@
 """
 Backtest: Volume spike + scoring + filters + exit strategy.
 
-Signal days: May 12 – May 27, 2026 (3 tuần)
+Signal days: Apr 7 – May 27, 2026 (~7 tuần thực tế)
 Buy price  : close price tại thời điểm phát hiện tín hiệu
-Exit rules :
-  - Stop loss  -3%  → check T+1 day low
-  - Take profit +5% → check T+1 day high
-  - Else sell at T+2 close
+Exit rules : Stop loss | Take profit | T+2 close (so sánh nhiều mức)
 
-Filters so sánh:
+Filters:
   A. Không filter (baseline)
   B. Market filter : VNINDEX xanh cùng ngày
-  C. Trend filter  : VNINDEX 5 ngày đang tăng (uptrend)
-  D. B + C kết hợp
+  C. Trend filter  : VNINDEX uptrend 5 ngày
+  D. B + C
+
+Exit sweep: SL -3%, -5%, -7% × TP +5%, +7% để tìm thông số tốt nhất
 """
 
 import asyncio
@@ -35,22 +34,28 @@ from src.data.dnse_client import fetch_all_ohlcv, fetch_hose_symbols
 
 _TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
-# ── Trading calendar (thêm ngày nếu cần) ─────────────────────────────────────
-# May 1 = Labor Day holiday; April 30 = Liberation Day holiday
+# ── Trading calendar ──────────────────────────────────────────────────────────
+# April 30 = Liberation Day, May 1 = Labor Day (holiday)
 TRADING_CAL: list[date] = [
-    # History buffer cho VMA9 (April)
-    date(2026, 4, 14), date(2026, 4, 15), date(2026, 4, 16), date(2026, 4, 17),
-    date(2026, 4, 21), date(2026, 4, 22), date(2026, 4, 23), date(2026, 4, 24),
+    # VMA9 history buffer (March)
+    date(2026, 3, 16), date(2026, 3, 17), date(2026, 3, 18), date(2026, 3, 19), date(2026, 3, 20),
+    date(2026, 3, 23), date(2026, 3, 24), date(2026, 3, 25), date(2026, 3, 26), date(2026, 3, 27),
+    date(2026, 3, 30), date(2026, 3, 31),
+    # April (signal start từ 7/4)
+    date(2026, 4,  1), date(2026, 4,  2), date(2026, 4,  3),
+    date(2026, 4,  7), date(2026, 4,  8), date(2026, 4,  9), date(2026, 4, 10),
+    date(2026, 4, 13), date(2026, 4, 14), date(2026, 4, 15), date(2026, 4, 16), date(2026, 4, 17),
+    date(2026, 4, 21), date(2026, 4, 22), date(2026, 4, 23), date(2026, 4, 24), date(2026, 4, 25),
     date(2026, 4, 28), date(2026, 4, 29),
-    # May (bỏ 30/4 và 1/5)
+    # May (bỏ 30/4, 1/5 và 4/5 nếu là bridge)
     date(2026, 5,  5), date(2026, 5,  6), date(2026, 5,  7), date(2026, 5,  8), date(2026, 5,  9),
     date(2026, 5, 12), date(2026, 5, 13), date(2026, 5, 14), date(2026, 5, 15), date(2026, 5, 16),
     date(2026, 5, 19), date(2026, 5, 20), date(2026, 5, 21), date(2026, 5, 22), date(2026, 5, 23),
     date(2026, 5, 26), date(2026, 5, 27), date(2026, 5, 28), date(2026, 5, 29),
 ]
 
-# Ngày cần T+2 data (signal_day + 2 trading days) → cut ở May 27 để T+2 ≤ May 29
-SIGNAL_DAYS = [d for d in TRADING_CAL if date(2026, 5, 12) <= d <= date(2026, 5, 27)]
+# Signal days: Apr 7 → May 27 (cần T+2 ≤ May 29)
+SIGNAL_DAYS = [d for d in TRADING_CAL if date(2026, 4, 7) <= d <= date(2026, 5, 27)]
 
 def _t_plus(d: date, n: int) -> date | None:
     try:
@@ -66,31 +71,40 @@ CHECK_TIMES = [
     time(14, 15), time(14, 30), time(14, 45),
 ]
 
-STOP_LOSS    = -3.0
-TAKE_PROFIT  =  5.0
 MIN_SCORE    =  4
 ATO_THRESH   =  3.0
 WARN_THRESH  =  2.0
 CRIT_THRESH  =  3.0
-VNI_TREND_DAYS = 5   # so sánh VNI hôm nay với 5 ngày trước
+VNI_TREND_DAYS = 5
+
+# Exit parameter sweep
+SL_LIST = [-3.0, -5.0, -7.0]
+TP_LIST = [ 5.0,  7.0]
 
 
 # ── Data class ────────────────────────────────────────────────────────────────
 
 @dataclass
-class Trade:
+class Signal:
     signal_day:  date
     symbol:      str
     signal_time: str
     ratio:       float
     score:       int
     buy_price:   float
+    vni_green:   bool
+    vni_uptrend: bool
+
+
+@dataclass
+class Trade:
+    sig:         Signal
+    sl:          float
+    tp:          float
     exit_price:  float
     exit_day:    date
-    exit_reason: str       # STOP_LOSS | TAKE_PROFIT | T+2
+    exit_reason: str    # STOP_LOSS | TAKE_PROFIT | T+2
     pnl_pct:     float
-    vni_green:   bool      # VNINDEX xanh cùng ngày?
-    vni_uptrend: bool      # VNINDEX 5-ngày đang tăng?
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -115,7 +129,6 @@ def _day_ohlcv(all_daily: dict, sym: str, d: date) -> dict | None:
     if not idx:
         return None
     return {
-        "open":  data["o"][idx[0]],
         "high":  max(data["h"][i] for i in idx) if "h" in data else None,
         "low":   min(data["l"][i] for i in idx) if "l" in data else None,
         "close": data["c"][idx[-1]],
@@ -142,25 +155,17 @@ def _high20_before(all_daily: dict, sym: str, sig_day: date) -> float | None:
     return max(highs[-20:]) if highs else None
 
 
-def _vni_green(vni_chg: float | None) -> bool:
-    return vni_chg is not None and vni_chg > 0
-
-
-def _vni_uptrend(vni_daily: dict | None, sig_day: date) -> bool:
-    """True nếu VNINDEX close hôm nay > close cách đây VNI_TREND_DAYS ngày giao dịch."""
+def _vni_uptrend(vni_daily: dict, sig_day: date) -> bool:
     if not vni_daily or not vni_daily.get("t"):
         return False
     cut = _ts(sig_day, time(0, 0))
     closes = [(ts, c) for ts, c in zip(vni_daily["t"], vni_daily["c"]) if ts < cut and c]
     if len(closes) < VNI_TREND_DAYS:
         return False
-    close_now = closes[-1][1]
-    close_nd  = closes[-VNI_TREND_DAYS][1]
-    return close_now > close_nd
+    return closes[-1][1] > closes[-VNI_TREND_DAYS][1]
 
 
 async def _fetch_vnindex_intra(d: date) -> float | None:
-    """VNINDEX change% trong ngày d."""
     url = "https://services.entrade.com.vn/chart-api/v2/ohlcs/index"
     async with httpx.AsyncClient(timeout=15) as c:
         r = await c.get(url, params={
@@ -169,20 +174,17 @@ async def _fetch_vnindex_intra(d: date) -> float | None:
         })
         if r.status_code != 200:
             return None
-        data = r.json()
-    _, vni_open, vni_close = _parse_ohlcv(data)
+    _, vni_open, vni_close = _parse_ohlcv(r.json())
     return _price_change_pct(vni_open, vni_close)
 
 
 async def _fetch_vnindex_daily() -> dict:
-    """VNINDEX daily data (dùng để tính trend)."""
     url = "https://services.entrade.com.vn/chart-api/v2/ohlcs/index"
-    from_ts = _ts(TRADING_CAL[0], time(0, 0))
-    to_ts   = _ts(TRADING_CAL[-1], time(23, 59, 59))
     async with httpx.AsyncClient(timeout=30) as c:
         r = await c.get(url, params={
             "symbol": "VNINDEX", "resolution": "1D",
-            "from": from_ts, "to": to_ts,
+            "from": _ts(TRADING_CAL[0],  time(0, 0)),
+            "to":   _ts(TRADING_CAL[-1], time(23, 59, 59)),
         })
         return r.json() if r.status_code == 200 else {}
 
@@ -193,10 +195,10 @@ def _detect_day(
     sig_day: date, symbols: list[str],
     intra_raw: dict, all_daily: dict,
     vni_chg: float | None, vni_daily: dict,
-) -> list[dict]:
-    green   = _vni_green(vni_chg)
+) -> list[Signal]:
+    green   = vni_chg is not None and vni_chg > 0
     uptrend = _vni_uptrend(vni_daily, sig_day)
-    signals = []
+    signals: list[Signal] = []
     alerted: set[str] = set()
 
     for check_t in CHECK_TIMES:
@@ -230,103 +232,78 @@ def _detect_day(
             if score.total < MIN_SCORE:
                 continue
             alerted.add(sym)
-            signals.append({
-                "symbol": sym, "time": check_t.strftime("%H:%M"),
-                "ratio": ratio, "score": score.total,
-                "buy_price": close_p,
-                "vni_green": green,
-                "vni_uptrend": uptrend,
-            })
+            signals.append(Signal(
+                signal_day=sig_day, symbol=sym,
+                signal_time=check_t.strftime("%H:%M"),
+                ratio=ratio, score=score.total,
+                buy_price=close_p or 0,
+                vni_green=green, vni_uptrend=uptrend,
+            ))
     return signals
 
 
 # ── Exit simulation ───────────────────────────────────────────────────────────
 
-def _simulate(sig: dict, sig_day: date, all_daily: dict) -> Trade | None:
-    sym = sig["symbol"]
-    buy = sig["buy_price"]
+def _simulate(sig: Signal, all_daily: dict, sl_pct: float, tp_pct: float) -> Trade | None:
+    buy = sig.buy_price
     if not buy or buy <= 0:
         return None
-    sl = buy * (1 + STOP_LOSS / 100)
-    tp = buy * (1 + TAKE_PROFIT / 100)
-    t1 = _t_plus(sig_day, 1)
-    t2 = _t_plus(sig_day, 2)
+    sl_price = buy * (1 + sl_pct / 100)
+    tp_price = buy * (1 + tp_pct / 100)
+    t1 = _t_plus(sig.signal_day, 1)
+    t2 = _t_plus(sig.signal_day, 2)
     if not t1 or not t2:
         return None
 
     for check_day, is_final in [(t1, False), (t2, True)]:
-        ohlcv = _day_ohlcv(all_daily, sym, check_day)
+        ohlcv = _day_ohlcv(all_daily, sig.symbol, check_day)
         if not ohlcv:
             if is_final:
-                return None   # T+2 data chưa có
+                return None
             continue
-        low   = ohlcv["low"]  or buy
-        high  = ohlcv["high"] or buy
-        close = ohlcv["close"]
-        if low <= sl:
-            return Trade(sig_day, sym, sig["time"], sig["ratio"], sig["score"],
-                         buy, sl, check_day, "STOP_LOSS", STOP_LOSS,
-                         sig["vni_green"], sig["vni_uptrend"])
-        if high >= tp:
-            return Trade(sig_day, sym, sig["time"], sig["ratio"], sig["score"],
-                         buy, tp, check_day, "TAKE_PROFIT", TAKE_PROFIT,
-                         sig["vni_green"], sig["vni_uptrend"])
+        low   = ohlcv["low"]   or buy
+        high  = ohlcv["high"]  or buy
+        close = ohlcv["close"] or buy
+        if low <= sl_price:
+            return Trade(sig, sl_pct, tp_pct, sl_price, check_day, "SL", sl_pct)
+        if high >= tp_price:
+            return Trade(sig, sl_pct, tp_pct, tp_price, check_day, "TP", tp_pct)
         if is_final:
             pnl = (close - buy) / buy * 100
-            return Trade(sig_day, sym, sig["time"], sig["ratio"], sig["score"],
-                         buy, close, check_day, "T+2", pnl,
-                         sig["vni_green"], sig["vni_uptrend"])
+            return Trade(sig, sl_pct, tp_pct, close, check_day, "T2", pnl)
     return None
 
 
-# ── Output ────────────────────────────────────────────────────────────────────
+# ── Stats ─────────────────────────────────────────────────────────────────────
 
-def _icon(pnl: float) -> str:
-    return "✅" if pnl > 0 else ("⚠️ " if abs(pnl) < 0.01 else "❌")
-
-
-def _stats(trades: list[Trade]) -> str:
+def _report(trades: list[Trade], label: str):
     if not trades:
-        return "0 GD"
+        print(f"  {label}: 0 GD")
+        return
     n    = len(trades)
     wins = sum(1 for t in trades if t.pnl_pct > 0)
     avg  = sum(t.pnl_pct for t in trades) / n
-    tp_n = sum(1 for t in trades if t.exit_reason == "TAKE_PROFIT")
-    sl_n = sum(1 for t in trades if t.exit_reason == "STOP_LOSS")
-    return (f"{wins}/{n} thắng ({wins/n*100:.0f}%)  avg {avg:+.2f}%  "
-            f"TP:{tp_n} SL:{sl_n} T2:{n-tp_n-sl_n}")
-
-
-def _print_group(trades: list[Trade], title: str):
-    print(f"\n  ── {title} ──")
-    if not trades:
-        print("    (không có GD)")
-        return
-    print(f"  {'Ngày mua':<10}  {'Mã':<5}  {'Giờ':<5}  {'Sc':>4}  "
-          f"{'Mua':>8}  {'Bán':>8}  {'P&L':>7}  Lý do")
-    print("  " + "─" * 64)
-    for t in sorted(trades, key=lambda x: (x.signal_day, x.symbol)):
-        print(f"  {str(t.signal_day):<10}  {t.symbol:<5}  {t.signal_time:<5}  "
-              f"{t.score}/6  {t.buy_price:>8,.1f}  {t.exit_price:>8,.1f}  "
-              f"{t.pnl_pct:>+6.2f}%  {_icon(t.pnl_pct)} {t.exit_reason}")
-    print(f"\n  → {_stats(trades)}")
+    tp_n = sum(1 for t in trades if t.exit_reason == "TP")
+    sl_n = sum(1 for t in trades if t.exit_reason == "SL")
+    print(f"  {label}: {wins:>3}/{n:<3} ({wins/n*100:>3.0f}%)  "
+          f"avg {avg:>+6.2f}%  TP:{tp_n:<3} SL:{sl_n}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 async def main():
     print("=" * 70)
-    print("  BACKTEST — 3 tuần thực tế (May 12 – 27, 2026)")
-    print(f"  Exit: SL {STOP_LOSS:+.0f}% | TP +{TAKE_PROFIT:.0f}% | T+2 close")
+    print("  BACKTEST — Apr 7 → May 27, 2026  (~7 tuần)")
+    print("  Exit sweep: SL [-3,-5,-7%] × TP [+5,+7%]")
     print("=" * 70)
 
     # 1. Symbols
-    print("\n[1/5] Lấy danh sách mã HoSE...")
+    print("\n[1/5] Danh sách mã HoSE...")
     symbols = await fetch_hose_symbols()
     print(f"      {len(symbols)} mã")
 
-    # 2. Daily stock data (VMA9 + exit prices)
-    print("\n[2/5] Fetch daily OHLCV stocks (2026-04-14 → 2026-05-29)...")
+    # 2. Daily data (VMA9 + exit prices)
+    print("\n[2/5] Daily OHLCV stocks (2026-03-16 → 2026-05-29)...")
     all_daily = await fetch_all_ohlcv(
         symbols,
         _ts(TRADING_CAL[0],  time(0, 0)),
@@ -335,16 +312,13 @@ async def main():
     )
     print(f"      {sum(1 for v in all_daily.values() if v and v.get('t'))} mã có data")
 
-    # 3. VNINDEX daily (cho trend filter)
-    print("\n[3/5] Fetch VNINDEX daily (trend filter)...")
+    # 3. VNINDEX daily trend
+    print("\n[3/5] VNINDEX daily (trend 5 ngày)...")
     vni_daily = await _fetch_vnindex_daily()
-    if vni_daily.get("t"):
-        print(f"      {len(vni_daily['t'])} candle VNINDEX daily")
-    else:
-        print("      ❌ Không lấy được VNINDEX daily")
+    print(f"      {len(vni_daily.get('t', []))} candle")
 
-    # 4. VNINDEX intraday + intraday stocks mỗi ngày signal
-    print(f"\n[4/5] Fetch VNINDEX intraday + stocks 15-min ({len(SIGNAL_DAYS)} ngày)...")
+    # 4. Intraday + VNINDEX per signal day (song song mỗi ngày)
+    print(f"\n[4/5] Intraday 15-min + VNINDEX ({len(SIGNAL_DAYS)} ngày)...")
     vni_chg_by_day: dict[date, float | None] = {}
     intra_by_day:   dict[date, dict] = {}
 
@@ -355,93 +329,112 @@ async def main():
         )
         vni_chg_by_day[d] = vni_chg
         intra_by_day[d]   = intra
-        green   = _vni_green(vni_chg)
-        uptrend = _vni_uptrend(vni_daily, d)
-        flag_g  = "🟢" if green   else "🔴"
-        flag_t  = "📈" if uptrend else "📉"
-        vni_s   = f"{vni_chg:+.2f}%" if vni_chg is not None else "N/A"
-        print(f"      {d}  {flag_g} ngày:{vni_s:<8}  {flag_t} trend5d")
+        g = "🟢" if (vni_chg and vni_chg > 0) else "🔴"
+        u = "📈" if _vni_uptrend(vni_daily, d) else "📉"
+        v = f"{vni_chg:+.2f}%" if vni_chg is not None else "  N/A"
+        print(f"      {d}  {g}{v:<8}  {u}")
 
-    # 5. Detect + simulate
-    print("\n[5/5] Detect signals + simulate trades...")
-    all_trades: list[Trade] = []
-    day_stats:  list[tuple] = []
+    # 5. Detect all signals
+    print("\n[5/5] Detect signals...")
+    all_signals: list[Signal] = []
     pending_total = 0
 
     for d in SIGNAL_DAYS:
-        sigs = _detect_day(
-            d, symbols, intra_by_day[d], all_daily,
-            vni_chg_by_day[d], vni_daily,
-        )
-        trades, pending = [], 0
-        for s in sigs:
-            t = _simulate(s, d, all_daily)
-            if t:
-                trades.append(t)
-                all_trades.append(t)
-            else:
-                pending += 1
-        pending_total += pending
-        note = f"⏳{pending}" if pending else "✅"
-        print(f"      {d}: {len(sigs):>2} BUY → {len(trades):>2} GD  {note}")
-        day_stats.append((d, vni_chg_by_day[d], len(sigs), trades))
+        sigs = _detect_day(d, symbols, intra_by_day[d], all_daily,
+                           vni_chg_by_day[d], vni_daily)
+        # Check how many have T+2 data
+        n_data    = sum(1 for s in sigs if _day_ohlcv(all_daily, s.symbol, _t_plus(d, 2) or d))
+        n_pending = len(sigs) - n_data
+        pending_total += n_pending
+        all_signals.extend(sigs)
+        print(f"      {d}: {len(sigs):>2} BUY SIGNAL  {'⏳' + str(n_pending) if n_pending else '✅'}")
 
-    # ── Kết quả ──────────────────────────────────────────────────────────────
+    print(f"\n  Tổng tín hiệu: {len(all_signals)}")
+    if pending_total:
+        print(f"  ⏳ {pending_total} chưa có T+2 data (bỏ qua trong backtest)")
+
+    # ── Exit parameter sweep ──────────────────────────────────────────────────
     print("\n" + "=" * 70)
-    print("  KẾT QUẢ")
+    print("  SWEEP EXIT PARAMETERS")
     print("=" * 70)
 
-    A = all_trades
-    B = [t for t in A if t.vni_green]
-    C = [t for t in A if t.vni_uptrend]
-    D = [t for t in A if t.vni_green and t.vni_uptrend]
+    # Tính tất cả trades cho mọi (SL, TP) combo
+    combo_results: dict[tuple, list[Trade]] = {}
+    for sl in SL_LIST:
+        for tp in TP_LIST:
+            trades = [t for s in all_signals
+                      if (t := _simulate(s, all_daily, sl, tp)) is not None]
+            combo_results[(sl, tp)] = trades
 
-    _print_group(A, "A. Không filter (baseline)")
-    _print_group(B, "B. Market filter: VNI xanh cùng ngày")
-    _print_group(C, "C. Trend filter: VNI uptrend 5 ngày")
-    _print_group(D, "D. Kết hợp B + C (VNI xanh + uptrend)")
-
-    # So sánh
-    print(f"\n{'─'*70}")
-    print("  SO SÁNH 4 CHIẾN LƯỢC:")
-    print(f"{'─'*70}")
-    for label, group in [
-        ("A. Không filter      ", A),
-        ("B. Market filter     ", B),
-        ("C. Trend filter 5d   ", C),
-        ("D. Market + Trend    ", D),
-    ]:
-        if not group:
-            print(f"  {label}: 0 GD — không đủ điều kiện")
-            continue
-        n    = len(group)
-        wins = sum(1 for t in group if t.pnl_pct > 0)
-        avg  = sum(t.pnl_pct for t in group) / n
-        tp_n = sum(1 for t in group if t.exit_reason == "TAKE_PROFIT")
-        sl_n = sum(1 for t in group if t.exit_reason == "STOP_LOSS")
-        print(f"  {label}: {wins:>3}/{n:<3} thắng  ({wins/n*100:>3.0f}%)  "
-              f"avg {avg:>+6.2f}%  TP:{tp_n:<2} SL:{sl_n}")
-
-    # Breakdown theo tuần
-    print(f"\n{'─'*70}")
-    print("  BREAKDOWN THEO NGÀY:")
-    print(f"  {'Ngày':<10}  {'VNI':>7}  {'Trend':>5}  {'Signal':>6}  Win/Total  Avg P&L")
-    print(f"  {'─'*10}  {'─'*7}  {'─'*5}  {'─'*6}  {'─'*9}  {'─'*7}")
-    for d, vni_chg, n_sigs, trades in day_stats:
+    print(f"\n  {'SL':>5}  {'TP':>5}  {'GD':>5}  {'Win%':>5}  {'Avg P&L':>8}  "
+          f"{'TP#':>4}  {'SL#':>4}  T2#")
+    print("  " + "─" * 55)
+    best_combo, best_avg = (0, 0), -999.0
+    for (sl, tp), trades in sorted(combo_results.items()):
         if not trades:
             continue
-        wins  = sum(1 for t in trades if t.pnl_pct > 0)
-        avg   = sum(t.pnl_pct for t in trades) / len(trades)
-        green   = _vni_green(vni_chg)
-        uptrend = _vni_uptrend(vni_daily, d)
-        vni_s   = f"{vni_chg:+.2f}%" if vni_chg is not None else "   N/A"
-        trend_s = "📈 up" if uptrend else "📉 dn"
-        print(f"  {str(d):<10}  {vni_s:>7}  {trend_s}  {n_sigs:>6}  "
-              f"{wins:>2}/{len(trades):<2}       {avg:>+6.2f}%")
+        n    = len(trades)
+        wins = sum(1 for t in trades if t.pnl_pct > 0)
+        avg  = sum(t.pnl_pct for t in trades) / n
+        tp_n = sum(1 for t in trades if t.exit_reason == "TP")
+        sl_n = sum(1 for t in trades if t.exit_reason == "SL")
+        t2_n = n - tp_n - sl_n
+        star = " ← best" if avg > best_avg else ""
+        if avg > best_avg:
+            best_avg, best_combo = avg, (sl, tp)
+        print(f"  {sl:>+5.0f}%  {tp:>+5.0f}%  {n:>5}  {wins/n*100:>4.0f}%  "
+              f"{avg:>+7.2f}%  {tp_n:>4}  {sl_n:>4}  {t2_n}{star}")
+
+    # ── Tìm bộ thông số tốt nhất → phân tích filters ─────────────────────────
+    sl_best, tp_best = best_combo
+    best_trades = combo_results[best_combo]
+
+    print(f"\n{'─'*70}")
+    print(f"  BỘ THÔNG SỐ TỐT NHẤT: SL {sl_best:+.0f}%  TP +{tp_best:.0f}%")
+    print(f"{'─'*70}")
+
+    A = best_trades
+    B = [t for t in A if t.sig.vni_green]
+    C = [t for t in A if t.sig.vni_uptrend]
+    D = [t for t in A if t.sig.vni_green and t.sig.vni_uptrend]
+
+    _report(A, "A. Không filter      ")
+    _report(B, "B. Market filter VNI ")
+    _report(C, "C. Trend filter 5d   ")
+    _report(D, "D. Market + Trend    ")
+
+    # ── Breakdown theo tháng ─────────────────────────────────────────────────
+    print(f"\n{'─'*70}")
+    print("  BREAKDOWN THEO THÁNG:")
+    for mo, mo_label in [(4, "Tháng 4"), (5, "Tháng 5")]:
+        mo_trades = [t for t in A if t.sig.signal_day.month == mo]
+        if not mo_trades:
+            continue
+        n    = len(mo_trades)
+        wins = sum(1 for t in mo_trades if t.pnl_pct > 0)
+        avg  = sum(t.pnl_pct for t in mo_trades) / n
+        print(f"  {mo_label}: {wins}/{n} thắng ({wins/n*100:.0f}%)  avg {avg:+.2f}%")
+
+    # ── Breakdown ngày ────────────────────────────────────────────────────────
+    print(f"\n  {'Ngày':<10}  {'VNI':>7}  {'Trend':>5}  {'Sig':>4}  {'Win/GD':>7}  Avg P&L")
+    print("  " + "─" * 55)
+    for d in SIGNAL_DAYS:
+        day_trades = [t for t in A if t.sig.signal_day == d]
+        if not day_trades:
+            continue
+        wins  = sum(1 for t in day_trades if t.pnl_pct > 0)
+        avg   = sum(t.pnl_pct for t in day_trades) / len(day_trades)
+        vni   = vni_chg_by_day[d]
+        g     = "🟢" if (vni and vni > 0) else "🔴"
+        u     = "📈" if _vni_uptrend(vni_daily, d) else "📉"
+        v_s   = f"{vni:+.2f}%" if vni is not None else "   N/A"
+        n_sig = sum(1 for s in all_signals if s.signal_day == d)
+        print(f"  {str(d):<10}  {g}{v_s:>7}  {u}    {n_sig:>4}  "
+              f"{wins:>2}/{len(day_trades):<2}      {avg:>+6.2f}%")
 
     if pending_total:
-        print(f"\n  ⏳ {pending_total} tín hiệu chưa có T+2 data")
-    print(f"{'─'*70}\n")
+        print(f"\n  ⏳ {pending_total} tín hiệu chưa có T+2 data (không tính vào kết quả)")
+    print()
 
 
 if __name__ == "__main__":
