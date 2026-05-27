@@ -25,8 +25,18 @@ def compute_vma9(data: dict | None, min_days: int, lookback: int) -> float | Non
     return sum(recent) / len(recent)
 
 
+def compute_high20(data: dict | None) -> float | None:
+    """Return highest daily high over last 20 trading sessions."""
+    if not data or not data.get("t"):
+        return None
+    highs = [h for h in data.get("h", []) if h and h > 0]
+    if not highs:
+        return None
+    return max(highs[-20:])
+
+
 async def update_vma9_all(symbols: list[str], store: RedisStore) -> int:
-    """Fetch daily OHLCV for all symbols and persist VMA9 to Redis. Returns count updated."""
+    """Fetch daily OHLCV for all symbols, persist VMA9 + High20 to Redis."""
     s = get_settings()
     today = datetime.now(_TZ).date()
     yesterday = today - timedelta(days=1)
@@ -35,7 +45,7 @@ async def update_vma9_all(symbols: list[str], store: RedisStore) -> int:
     from_ts = int(datetime.combine(from_date, time(0, 0), tzinfo=_TZ).timestamp())
     to_ts = int(datetime.combine(yesterday, time(23, 59, 59), tzinfo=_TZ).timestamp())
 
-    logger.info("Fetching daily OHLCV for VMA9 (%d symbols, %s → %s)", len(symbols), from_date, yesterday)
+    logger.info("Fetching daily OHLCV for VMA9 + High20 (%d symbols, %s → %s)", len(symbols), from_date, yesterday)
     raw = await fetch_all_ohlcv(symbols, from_ts, to_ts, resolution="1D")
 
     updated = 0
@@ -46,6 +56,10 @@ async def update_vma9_all(symbols: list[str], store: RedisStore) -> int:
             updated += 1
         else:
             logger.debug("No VMA9 data for %s", symbol)
+
+        high20 = compute_high20(data)
+        if high20 is not None:
+            await store.set_high20(symbol, high20)
 
     logger.info("VMA9 updated: %d/%d symbols", updated, len(symbols))
     return updated

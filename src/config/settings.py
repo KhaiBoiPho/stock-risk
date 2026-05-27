@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     redis_password: str = ""
 
     # DNSE API
-    dnse_concurrency: int = 50
+    dnse_concurrency: int = 20
     dnse_timeout: float = 10.0
     dnse_max_retries: int = 3
 

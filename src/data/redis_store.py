@@ -61,6 +61,22 @@ class RedisStore:
         except Exception as exc:
             logger.error("setex alerted:%s:%s: %s", symbol, level, exc)
 
+    # --- High20 (đỉnh 20 phiên — dùng cho breakout detection) ---
+
+    async def set_high20(self, symbol: str, value: float) -> None:
+        try:
+            await self._r.set(f"high20:{symbol}", value)
+        except Exception as exc:
+            logger.error("set high20:%s: %s", symbol, exc)
+
+    async def get_all_high20(self, symbols: list[str]) -> dict[str, float | None]:
+        try:
+            values = await self._r.mget([f"high20:{sym}" for sym in symbols])
+            return {sym: float(v) if v is not None else None for sym, v in zip(symbols, values)}
+        except Exception as exc:
+            logger.error("mget high20: %s", exc)
+            return {sym: None for sym in symbols}
+
     # --- Last ratio (reference) ---
 
     async def set_last_ratio(self, symbol: str, ratio: float) -> None:
