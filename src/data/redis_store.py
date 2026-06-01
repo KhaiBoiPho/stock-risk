@@ -30,6 +30,17 @@ class RedisStore:
         except Exception as exc:
             logger.error("set vma9:%s: %s", symbol, exc)
 
+    async def set_vma9_bulk(self, pairs: list[tuple[str, float]]) -> None:
+        if not pairs:
+            return
+        try:
+            pipe = self._r.pipeline(transaction=False)
+            for symbol, value in pairs:
+                pipe.set(f"vma9:{symbol}", value)
+            await pipe.execute()
+        except Exception as exc:
+            logger.error("set_vma9_bulk: %s", exc)
+
     async def get_all_vma9(self, symbols: list[str]) -> dict[str, float | None]:
         try:
             values = await self._r.mget([f"vma9:{sym}" for sym in symbols])
@@ -73,9 +84,15 @@ class RedisStore:
 
     async def reset_daily(self) -> None:
         try:
+            deleted = 0
             for pattern in ("vol_today:*", "alerted:*"):
-                async for key in self._r.scan_iter(pattern, count=200):
-                    await self._r.delete(key)
-            logger.info("Daily Redis keys cleared")
+                keys = [k async for k in self._r.scan_iter(pattern, count=500)]
+                if keys:
+                    pipe = self._r.pipeline(transaction=False)
+                    for k in keys:
+                        pipe.delete(k)
+                    await pipe.execute()
+                    deleted += len(keys)
+            logger.info("Daily Redis keys cleared (%d keys)", deleted)
         except Exception as exc:
             logger.error("reset_daily: %s", exc)

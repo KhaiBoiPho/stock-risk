@@ -10,8 +10,12 @@ from src.config.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
-_SYMBOLS_CACHE_PATH = Path("data/symbols.txt")
+_SYMBOLS_HOSE_CACHE_PATH = Path("data/symbols_hose.txt")
+_SYMBOLS_HNX_CACHE_PATH = Path("data/symbols_hnx.txt")
+# backward-compat alias kept for any external references
+_SYMBOLS_CACHE_PATH = _SYMBOLS_HOSE_CACHE_PATH
 _CAFEF_URL = "https://banggia.cafef.vn/stockhandler.ashx"
+_VPS_ALL_STOCKS_URL = "https://bgapidatafeed.vps.com.vn/getlistallstock"
 
 
 async def _get(
@@ -30,7 +34,13 @@ async def _get(
             except httpx.TimeoutException:
                 logger.warning("Timeout %s attempt %d", url, attempt + 1)
             except httpx.HTTPStatusError as exc:
-                logger.warning("HTTP %d %s attempt %d", exc.response.status_code, url, attempt + 1)
+                status = exc.response.status_code
+                if status == 429:
+                    retry_after = int(exc.response.headers.get("Retry-After", 10))
+                    logger.warning("Rate limited (429), sleeping %ds", retry_after)
+                    await asyncio.sleep(retry_after)
+                else:
+                    logger.warning("HTTP %d attempt %d", status, attempt + 1)
             except Exception as exc:
                 logger.error("Fetch error %s: %s", url, exc)
 
@@ -77,25 +87,43 @@ async def fetch_all_ohlcv(
 
 
 async def fetch_hose_symbols() -> list[str]:
-    """Fetch HoSE stock symbols. Tries CafeF → VNDirect → local cache."""
-    for fetch_fn in (_fetch_symbols_cafef, _fetch_symbols_vndirect):
+    """Fetch HoSE stock symbols. Tries CafeF → VPS → local cache."""
+    for fetch_fn in (_fetch_symbols_cafef_hose, lambda: _fetch_symbols_vps("HOSE")):
         try:
             symbols = await fetch_fn()
-            _save_symbols_to_file(symbols)
+            _save_symbols_to_file(symbols, _SYMBOLS_HOSE_CACHE_PATH)
             return symbols
         except Exception as exc:
-            logger.warning("Symbol fetch %s failed: %s", fetch_fn.__name__, exc)
+            logger.warning("Symbol fetch failed: %s", exc)
 
-    if _SYMBOLS_CACHE_PATH.exists():
-        logger.warning("Using cached symbols from %s", _SYMBOLS_CACHE_PATH)
-        return _load_symbols_from_file(_SYMBOLS_CACHE_PATH)
+    if _SYMBOLS_HOSE_CACHE_PATH.exists():
+        logger.warning("Using cached symbols from %s", _SYMBOLS_HOSE_CACHE_PATH)
+        return _load_symbols_from_file(_SYMBOLS_HOSE_CACHE_PATH)
 
     raise RuntimeError(
-        "Cannot fetch HoSE symbols: all sources failed and no cache at data/symbols.txt"
+        "Cannot fetch HoSE symbols: all sources failed and no cache at data/symbols_hose.txt"
     )
 
 
-async def _fetch_symbols_cafef() -> list[str]:
+async def fetch_hnx_symbols() -> list[str]:
+    """Fetch HNX stock symbols. Tries VPS → local cache."""
+    try:
+        symbols = await _fetch_symbols_vps("HNX")
+        _save_symbols_to_file(symbols, _SYMBOLS_HNX_CACHE_PATH)
+        return symbols
+    except Exception as exc:
+        logger.warning("VPS HNX symbol fetch failed: %s", exc)
+
+    if _SYMBOLS_HNX_CACHE_PATH.exists():
+        logger.warning("Using cached symbols from %s", _SYMBOLS_HNX_CACHE_PATH)
+        return _load_symbols_from_file(_SYMBOLS_HNX_CACHE_PATH)
+
+    raise RuntimeError(
+        "Cannot fetch HNX symbols: VPS failed and no cache at data/symbols_hnx.txt"
+    )
+
+
+async def _fetch_symbols_cafef_hose() -> list[str]:
     async with httpx.AsyncClient(timeout=15.0) as client:
         resp = await client.get(_CAFEF_URL, params={"index": "HOSE"})
         resp.raise_for_status()
@@ -103,26 +131,29 @@ async def _fetch_symbols_cafef() -> list[str]:
         symbols = sorted(item["a"] for item in data if item.get("a"))
 
     if not symbols:
-        raise ValueError("Empty symbol list from CafeF")
+        raise ValueError("Empty symbol list from CafeF (HOSE)")
 
     logger.info("Fetched %d HoSE symbols from CafeF", len(symbols))
     return symbols
 
 
-async def _fetch_symbols_vndirect() -> list[str]:
+async def _fetch_symbols_vps(exchange: str) -> list[str]:
+    """Fetch stock symbols from VPS broker API, filtered by exchange (HOSE or HNX)."""
     async with httpx.AsyncClient(timeout=15.0) as client:
-        resp = await client.get(
-            VNDIRECT_STOCKS_URL,
-            params={"sort": "code", "size": "500", "page": "1", "q": "floor:HOSE~type:STOCK"},
-        )
+        resp = await client.get(_VPS_ALL_STOCKS_URL, headers={"User-Agent": "Mozilla/5.0"})
         resp.raise_for_status()
         data = resp.json()
-        symbols = sorted(item["code"] for item in data.get("data", []) if item.get("code"))
+
+    symbols = sorted(
+        item["stock_code"]
+        for item in data
+        if item.get("post_to") == exchange and item.get("type") == "S" and item.get("stock_code")
+    )
 
     if not symbols:
-        raise ValueError("Empty symbol list from VNDirect")
+        raise ValueError(f"Empty symbol list from VPS ({exchange})")
 
-    logger.info("Fetched %d HoSE symbols from VNDirect", len(symbols))
+    logger.info("Fetched %d %s symbols from VPS", len(symbols), exchange)
     return symbols
 
 
@@ -132,9 +163,9 @@ def _load_symbols_from_file(path: Path) -> list[str]:
     return symbols
 
 
-def _save_symbols_to_file(symbols: list[str]) -> None:
+def _save_symbols_to_file(symbols: list[str], path: Path) -> None:
     try:
-        _SYMBOLS_CACHE_PATH.parent.mkdir(exist_ok=True)
-        _SYMBOLS_CACHE_PATH.write_text("\n".join(sorted(symbols)))
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("\n".join(sorted(symbols)))
     except Exception as exc:
         logger.warning("Could not save symbols cache: %s", exc)

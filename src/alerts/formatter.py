@@ -30,6 +30,12 @@ _LABEL = {
 }
 
 
+_EXCHANGE_LABEL = {
+    "HOSE": "HoSE",
+    "HNX": "HNX",
+}
+
+
 def format_alert(
     symbol: str,
     vol_today: int,
@@ -40,15 +46,17 @@ def format_alert(
     session_name: str,
     current_price: float | None,
     check_time: datetime,
+    exchange: str = "HOSE",
 ) -> str:
     emoji = _EMOJI[level]
     label = _LABEL[level]
     session_label = _SESSION_LABEL.get(session_name, session_name)
     expected = int(vma9 * elapsed / TOTAL_TRADING_MINUTES)
     price_str = f"{current_price:,.0f} đ" if current_price else "N/A"
+    exchange_label = _EXCHANGE_LABEL.get(exchange, exchange)
 
     return (
-        f"{emoji} <b>Volume đột biến – Mã: {symbol}</b>\n"
+        f"{emoji} <b>Volume đột biến – [{exchange_label}] {symbol}</b>\n"
         f"   Thời điểm  : {check_time.strftime('%H:%M')} ({session_label}, {elapsed}/{TOTAL_TRADING_MINUTES} phút)\n"
         f"   Vol lũy kế : {vol_today:,} cp\n"
         f"   Vol kỳ vọng: {expected:,} cp (VMA9: {int(vma9):,})\n"

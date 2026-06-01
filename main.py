@@ -11,7 +11,7 @@ from src.alerts.telegram import send_message
 from src.config.constants import VN_TIMEZONE
 from src.config.settings import get_settings
 from src.core.vma9 import update_vma9_all
-from src.data.dnse_client import fetch_hose_symbols
+from src.data.dnse_client import fetch_hose_symbols, fetch_hnx_symbols
 from src.data.redis_store import RedisStore
 from src.jobs.check import check_volume
 from src.jobs.reset import reset_daily
@@ -29,8 +29,16 @@ async def main() -> None:
     settings = get_settings()
     logging.getLogger().setLevel(settings.log_level.upper())
 
-    symbols = await fetch_hose_symbols()
-    logger.info("Loaded %d HoSE symbols", len(symbols))
+    hose_symbols = await fetch_hose_symbols()
+    logger.info("Loaded %d HoSE symbols", len(hose_symbols))
+
+    hnx_symbols = await fetch_hnx_symbols()
+    logger.info("Loaded %d HNX symbols", len(hnx_symbols))
+
+    exchange_map: dict[str, str] = {s: "HOSE" for s in hose_symbols}
+    exchange_map.update({s: "HNX" for s in hnx_symbols})
+    symbols = sorted(exchange_map.keys())
+    logger.info("Total symbols to monitor: %d", len(symbols))
 
     store = await RedisStore.create()
     logger.info("Redis connected")
@@ -55,7 +63,7 @@ async def main() -> None:
     scheduler.add_job(
         check_volume,
         CronTrigger(hour="9,10,11,13,14", minute="0,15,30,45", timezone=VN_TIMEZONE),
-        args=[symbols, store],
+        args=[symbols, store, exchange_map],
         id="check_volume",
         name="Volume check",
         misfire_grace_time=120,
@@ -76,13 +84,14 @@ async def main() -> None:
     logger.info("Scheduler started — waiting for jobs")
 
     now = datetime.now(ZoneInfo(VN_TIMEZONE))
-    weekday = ["Thứ 2","Thứ 3","Thứ 4","Thứ 5","Thứ 6","Thứ 7","Chủ nhật"][now.weekday()]
-    await send_message(
-        f"🤖 <b>Volume Spike Bot — {weekday} {now.strftime('%d/%m/%Y')}</b>\n"
-        f"   Theo dõi: {len(symbols)} mã HoSE\n"
-        f"   Khởi động lúc: {now.strftime('%H:%M:%S')}\n"
-        f"   VMA9 sẵn sàng — chờ phiên 09:15"
-    )
+    if now.weekday() < 5:  # Thứ 2–6 mới báo
+        weekday = ["Thứ 2","Thứ 3","Thứ 4","Thứ 5","Thứ 6"][now.weekday()]
+        await send_message(
+            f"🤖 <b>Volume Spike Bot — {weekday} {now.strftime('%d/%m/%Y')}</b>\n"
+            f"   Theo dõi: {len(hose_symbols)} mã HoSE + {len(hnx_symbols)} mã HNX ({len(symbols)} tổng)\n"
+            f"   Khởi động lúc: {now.strftime('%H:%M:%S')}\n"
+            f"   VMA9 sẵn sàng — chờ phiên 09:15"
+        )
 
     stop_event = asyncio.Event()
 

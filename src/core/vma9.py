@@ -38,14 +38,14 @@ async def update_vma9_all(symbols: list[str], store: RedisStore) -> int:
     logger.info("Fetching daily OHLCV for VMA9 (%d symbols, %s → %s)", len(symbols), from_date, yesterday)
     raw = await fetch_all_ohlcv(symbols, from_ts, to_ts, resolution="1D")
 
-    updated = 0
+    vma9_pairs: list[tuple[str, float]] = []
     for symbol, data in raw.items():
         vma9 = compute_vma9(data, s.vma9_min_days, s.vma9_lookback_days)
         if vma9 is not None:
-            await store.set_vma9(symbol, vma9)
-            updated += 1
+            vma9_pairs.append((symbol, vma9))
         else:
             logger.debug("No VMA9 data for %s", symbol)
 
-    logger.info("VMA9 updated: %d/%d symbols", updated, len(symbols))
-    return updated
+    await store.set_vma9_bulk(vma9_pairs)
+    logger.info("VMA9 updated: %d/%d symbols", len(vma9_pairs), len(symbols))
+    return len(vma9_pairs)

@@ -56,6 +56,7 @@ async def _check_one(
     check_time: datetime,
     store: RedisStore,
     s,
+    exchange: str = "HOSE",
 ) -> None:
     if not vma9 or vma9 <= 0:
         return
@@ -88,14 +89,19 @@ async def _check_one(
         session_name=session_name,
         current_price=last_close,
         check_time=check_time,
+        exchange=exchange,
     )
     sent = await send_message(text)
     if sent:
         await store.mark_alerted(symbol, level.value, ALERT_TTL_SECONDS)
-        logger.info("Alert sent: %s %s ratio=%.2f", symbol, level.value, ratio)
+        logger.info("Alert sent: %s [%s] %s ratio=%.2f", symbol, exchange, level.value, ratio)
 
 
-async def run_check(symbols: list[str], store: RedisStore) -> None:
+async def run_check(
+    symbols: list[str],
+    store: RedisStore,
+    exchange_map: dict[str, str] | None = None,
+) -> None:
     now = datetime.now(_TZ)
     session = get_session(now.time())
     if session is None:
@@ -113,10 +119,14 @@ async def run_check(symbols: list[str], store: RedisStore) -> None:
     raw = await fetch_all_ohlcv(symbols, today_start_ts, now_ts, resolution="15")
     vma9_map = await store.get_all_vma9(symbols)
     s = get_settings()
+    ex_map = exchange_map or {}
 
     await asyncio.gather(
         *[
-            _check_one(sym, raw.get(sym), vma9_map.get(sym), elapsed, session.name, now, store, s)
+            _check_one(
+                sym, raw.get(sym), vma9_map.get(sym), elapsed, session.name, now, store, s,
+                exchange=ex_map.get(sym, "HOSE"),
+            )
             for sym in symbols
         ]
     )
