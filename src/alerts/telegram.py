@@ -1,7 +1,9 @@
+import asyncio
 import logging
 
 from telegram import Bot
 from telegram.constants import ParseMode
+from telegram.error import RetryAfter, TimedOut
 
 from src.config.settings import get_settings
 
@@ -18,13 +20,22 @@ def _get_bot() -> Bot:
 
 
 async def send_message(text: str) -> bool:
-    try:
-        await _get_bot().send_message(
-            chat_id=get_settings().telegram_chat_id,
-            text=text,
-            parse_mode=ParseMode.HTML,
-        )
-        return True
-    except Exception as exc:
-        logger.error("Telegram send failed: %s", exc)
-        return False
+    for attempt in range(3):
+        try:
+            await _get_bot().send_message(
+                chat_id=get_settings().telegram_chat_id,
+                text=text,
+                parse_mode=ParseMode.HTML,
+            )
+            return True
+        except RetryAfter as exc:
+            wait = int(exc.retry_after) + 1
+            logger.warning("Telegram flood control, waiting %ds", wait)
+            await asyncio.sleep(wait)
+        except TimedOut:
+            logger.warning("Telegram timeout, attempt %d", attempt + 1)
+            await asyncio.sleep(2)
+        except Exception as exc:
+            logger.error("Telegram send failed: %s", exc)
+            return False
+    return False
