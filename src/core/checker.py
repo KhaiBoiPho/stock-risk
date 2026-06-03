@@ -99,7 +99,8 @@ async def _check_one(
     if level is None:
         return
 
-    if await store.is_alerted(symbol, level.value):
+    # Atomic claim: chỉ coroutine đầu tiên SET được key mới gửi alert
+    if not await store.claim_alert(symbol, level.value, ALERT_TTL_SECONDS):
         return
 
     text = format_alert(
@@ -114,10 +115,8 @@ async def _check_one(
         check_time=check_time,
         exchange=exchange,
     )
-    sent = await send_message(text)
-    if sent:
-        await store.mark_alerted(symbol, level.value, ALERT_TTL_SECONDS)
-        logger.info("Alert sent: %s [%s] %s ratio=%.2f", symbol, exchange, level.value, ratio)
+    await send_message(text)
+    logger.info("Alert sent: %s [%s] %s ratio=%.2f", symbol, exchange, level.value, ratio)
 
 
 async def run_check(

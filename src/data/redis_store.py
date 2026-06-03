@@ -59,18 +59,16 @@ class RedisStore:
 
     # --- Alert dedup ---
 
-    async def is_alerted(self, symbol: str, level: str) -> bool:
+    async def claim_alert(self, symbol: str, level: str, ttl: int) -> bool:
+        """Atomic SET NX: returns True nếu caller được quyền gửi alert, False nếu đã có."""
         try:
-            return bool(await self._r.exists(f"alerted:{symbol}:{level}"))
+            result = await self._r.set(
+                f"alerted:{symbol}:{level}", "1", ex=ttl, nx=True
+            )
+            return result is not None
         except Exception as exc:
-            logger.error("exists alerted:%s:%s: %s", symbol, level, exc)
+            logger.error("claim_alert %s:%s: %s", symbol, level, exc)
             return False
-
-    async def mark_alerted(self, symbol: str, level: str, ttl: int) -> None:
-        try:
-            await self._r.setex(f"alerted:{symbol}:{level}", ttl, "1")
-        except Exception as exc:
-            logger.error("setex alerted:%s:%s: %s", symbol, level, exc)
 
     # --- Last ratio (reference) ---
 
