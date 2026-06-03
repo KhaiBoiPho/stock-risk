@@ -11,7 +11,7 @@ from src.alerts.telegram import send_message
 from src.config.constants import VN_TIMEZONE
 from src.config.settings import get_settings
 from src.core.vma9 import update_vma9_all
-from src.data.dnse_client import fetch_hose_symbols, fetch_hnx_symbols
+from src.data.dnse_client import fetch_hose_symbols, fetch_hnx_symbols, fetch_upcom_symbols
 from src.data.redis_store import RedisStore
 from src.jobs.check import check_volume
 from src.jobs.reset import reset_daily
@@ -35,8 +35,12 @@ async def main() -> None:
     hnx_symbols = await fetch_hnx_symbols()
     logger.info("Loaded %d HNX symbols", len(hnx_symbols))
 
+    upcom_symbols = await fetch_upcom_symbols()
+    logger.info("Loaded %d UPCoM symbols", len(upcom_symbols))
+
     exchange_map: dict[str, str] = {s: "HOSE" for s in hose_symbols}
     exchange_map.update({s: "HNX" for s in hnx_symbols})
+    exchange_map.update({s: "UPCOM" for s in upcom_symbols})
     symbols = sorted(exchange_map.keys())
     logger.info("Total symbols to monitor: %d", len(symbols))
 
@@ -88,7 +92,7 @@ async def main() -> None:
         weekday = ["Thứ 2","Thứ 3","Thứ 4","Thứ 5","Thứ 6"][now.weekday()]
         await send_message(
             f"🤖 <b>Volume Spike Bot — {weekday} {now.strftime('%d/%m/%Y')}</b>\n"
-            f"   Theo dõi: {len(hose_symbols)} mã HoSE + {len(hnx_symbols)} mã HNX ({len(symbols)} tổng)\n"
+            f"   Theo dõi: {len(hose_symbols)} mã HoSE + {len(hnx_symbols)} mã HNX + {len(upcom_symbols)} mã UPCoM ({len(symbols)} tổng)\n"
             f"   Khởi động lúc: {now.strftime('%H:%M:%S')}\n"
             f"   VMA9 sẵn sàng — chờ phiên 09:15"
         )

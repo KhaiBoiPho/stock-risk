@@ -33,6 +33,7 @@ _LABEL = {
 _EXCHANGE_LABEL = {
     "HOSE": "HoSE",
     "HNX": "HNX",
+    "UPCOM": "UPCoM",
 }
 
 

@@ -24,6 +24,24 @@ def _parse_ohlcv(data: dict | None) -> tuple[int, float | None]:
     return int(vol), (closes[-1] if closes else None)
 
 
+def passes_liquidity_filter(
+    vma9: float,
+    last_close: float | None,
+    min_volume: int,
+    min_value: int,
+) -> bool:
+    """Return True if the symbol meets minimum liquidity requirements.
+
+    Pass if VMA9 >= min_volume shares OR VMA9 * price >= min_value VND.
+    If price is unavailable, fall back to volume-only check.
+    """
+    if vma9 >= min_volume:
+        return True
+    if last_close and last_close > 0:
+        return vma9 * last_close >= min_value
+    return False
+
+
 def calculate_ratio(vol_today: int, vma9: float, elapsed: int) -> float | None:
     if vma9 <= 0 or elapsed <= 0:
         return None
@@ -62,6 +80,11 @@ async def _check_one(
         return
 
     vol_today, last_close = _parse_ohlcv(data)
+
+    if not passes_liquidity_filter(vma9, last_close, s.min_vma9_volume, s.min_vma9_value):
+        logger.debug("Skip %s: low liquidity (vma9=%.0f, price=%s)", symbol, vma9, last_close)
+        return
+
     ratio = calculate_ratio(vol_today, vma9, elapsed)
     if ratio is None:
         return

@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     vma9_lookback_days: int = 9
     vma9_history_fetch_days: int = 25
 
+    # Liquidity filter — skip symbols where BOTH conditions are below threshold
+    # NOTE: DNSE API trả giá theo nghìn đồng (e.g. FPT = 74.8 = 74,800 VND)
+    # min_vma9_value dùng cùng đơn vị: 10_000_000 nghìn đ = 10 tỷ đồng thực tế
+    min_vma9_volume: int = 1_000_000     # 1 triệu cp/phiên
+    min_vma9_value: int = 10_000_000     # 10 tỷ đồng/phiên (đơn vị: nghìn đồng × cp)
+
     log_level: str = "INFO"
 
 

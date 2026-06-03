@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 _SYMBOLS_HOSE_CACHE_PATH = Path("data/symbols_hose.txt")
 _SYMBOLS_HNX_CACHE_PATH = Path("data/symbols_hnx.txt")
+_SYMBOLS_UPCOM_CACHE_PATH = Path("data/symbols_upcom.txt")
 # backward-compat alias kept for any external references
 _SYMBOLS_CACHE_PATH = _SYMBOLS_HOSE_CACHE_PATH
 _CAFEF_URL = "https://banggia.cafef.vn/stockhandler.ashx"
@@ -35,6 +36,9 @@ async def _get(
                 logger.warning("Timeout %s attempt %d", url, attempt + 1)
             except httpx.HTTPStatusError as exc:
                 status = exc.response.status_code
+                if status == 400 or status == 404:
+                    # No data for this symbol — retrying won't help
+                    return None
                 if status == 429:
                     retry_after = int(exc.response.headers.get("Retry-After", 10))
                     logger.warning("Rate limited (429), sleeping %ds", retry_after)
@@ -120,6 +124,24 @@ async def fetch_hnx_symbols() -> list[str]:
 
     raise RuntimeError(
         "Cannot fetch HNX symbols: VPS failed and no cache at data/symbols_hnx.txt"
+    )
+
+
+async def fetch_upcom_symbols() -> list[str]:
+    """Fetch UPCOM stock symbols. Tries VPS → local cache."""
+    try:
+        symbols = await _fetch_symbols_vps("UPCOM")
+        _save_symbols_to_file(symbols, _SYMBOLS_UPCOM_CACHE_PATH)
+        return symbols
+    except Exception as exc:
+        logger.warning("VPS UPCOM symbol fetch failed: %s", exc)
+
+    if _SYMBOLS_UPCOM_CACHE_PATH.exists():
+        logger.warning("Using cached symbols from %s", _SYMBOLS_UPCOM_CACHE_PATH)
+        return _load_symbols_from_file(_SYMBOLS_UPCOM_CACHE_PATH)
+
+    raise RuntimeError(
+        "Cannot fetch UPCOM symbols: VPS failed and no cache at data/symbols_upcom.txt"
     )
 
 
