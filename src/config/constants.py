@@ -3,7 +3,7 @@ from datetime import time
 
 VN_TIMEZONE = "Asia/Ho_Chi_Minh"
 TOTAL_TRADING_MINUTES = 255
-ALERT_TTL_SECONDS = 900  # 15 minutes — 1 check cycle
+ALERT_TTL_SECONDS = 600  # 10 minutes — ensures re-alert at next 15-min check cycle
 
 DNSE_OHLCV_URL = "https://services.entrade.com.vn/chart-api/v2/ohlcs/stock"
 VNDIRECT_STOCKS_URL = "https://finfo-api.vndirect.com.vn/v4/stocks"
