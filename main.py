@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from src.alerts.formatter import format_startup
 from src.alerts.telegram import send_message
 from src.config.constants import VN_TIMEZONE
 from src.config.settings import get_settings
@@ -89,13 +90,10 @@ async def main() -> None:
 
     now = datetime.now(ZoneInfo(VN_TIMEZONE))
     if now.weekday() < 5:  # Thứ 2–6 mới báo
-        weekday = ["Thứ 2","Thứ 3","Thứ 4","Thứ 5","Thứ 6"][now.weekday()]
-        await send_message(
-            f"🤖 <b>Volume Spike Bot — {weekday} {now.strftime('%d/%m/%Y')}</b>\n"
-            f"   Theo dõi: {len(hose_symbols)} mã HoSE + {len(hnx_symbols)} mã HNX + {len(upcom_symbols)} mã UPCoM ({len(symbols)} tổng)\n"
-            f"   Khởi động lúc: {now.strftime('%H:%M:%S')}\n"
-            f"   VMA9 sẵn sàng — chờ phiên 09:15"
-        )
+        weekday = ["Thu 2", "Thu 3", "Thu 4", "Thu 5", "Thu 6"][now.weekday()]
+        await send_message(format_startup(
+            weekday, now, len(hose_symbols), len(hnx_symbols), len(upcom_symbols)
+        ))
 
     stop_event = asyncio.Event()
 

@@ -56,6 +56,35 @@ def _row(label: str, value: str) -> str:
     return f"| {label:<{_LW}} | {value:>{_VW}} |"
 
 
+def format_startup(
+    weekday: str,
+    now: datetime,
+    n_hose: int,
+    n_hnx: int,
+    n_upcom: int,
+) -> str:
+    total = n_hose + n_hnx + n_upcom
+    date_str = now.strftime("%d/%m/%Y")
+    time_str = now.strftime("%H:%M:%S")
+    return (
+        f"🤖 <b>Volume Spike Bot</b>\n"
+        f"<pre>"
+        f"{_HDR_TOP}\n"
+        f"{_hdr(f'{weekday}  {date_str}  {time_str}')}\n"
+        f"{_HDR_SEP}\n"
+        f"{_row('HoSE',  f'{n_hose:,} ma')}\n"
+        f"{_row('HNX',   f'{n_hnx:,} ma')}\n"
+        f"{_row('UPCoM', f'{n_upcom:,} ma')}\n"
+        f"{_HSEP}\n"
+        f"{_row('Tong',  f'{total:,} ma')}\n"
+        f"{_HSEP}\n"
+        f"{_row('VMA9', 'san sang')}\n"
+        f"{_row('Bat dau luc', '09:15')}\n"
+        f"{_BOT}"
+        f"</pre>"
+    )
+
+
 def format_alert(
     symbol: str,
     vol_today: int,
