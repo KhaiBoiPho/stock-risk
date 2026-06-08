@@ -91,14 +91,29 @@ async def fetch_all_ohlcv(
 
 
 async def fetch_hose_symbols() -> list[str]:
-    """Fetch HoSE stock symbols. Tries CafeF → VPS → local cache."""
-    for fetch_fn in (_fetch_symbols_cafef_hose, lambda: _fetch_symbols_vps("HOSE")):
-        try:
-            symbols = await fetch_fn()
-            _save_symbols_to_file(symbols, _SYMBOLS_HOSE_CACHE_PATH)
-            return symbols
-        except Exception as exc:
-            logger.warning("Symbol fetch failed: %s", exc)
+    """Fetch HoSE stock symbols — union CafeF + VPS để đủ mã nhất.
+
+    CafeF và VPS mỗi nguồn có thể thiếu một số mã, lấy union để không bỏ sót.
+    Fallback về cache nếu cả 2 đều lỗi.
+    """
+    cafef_syms: set[str] = set()
+    vps_syms:   set[str] = set()
+
+    try:
+        cafef_syms = set(await _fetch_symbols_cafef_hose())
+    except Exception as exc:
+        logger.warning("CafeF HoSE fetch failed: %s", exc)
+
+    try:
+        vps_syms = set(await _fetch_symbols_vps("HOSE"))
+    except Exception as exc:
+        logger.warning("VPS HoSE fetch failed: %s", exc)
+
+    if cafef_syms or vps_syms:
+        symbols = sorted(cafef_syms | vps_syms)
+        logger.info("HoSE symbols: CafeF=%d VPS=%d union=%d", len(cafef_syms), len(vps_syms), len(symbols))
+        _save_symbols_to_file(symbols, _SYMBOLS_HOSE_CACHE_PATH)
+        return symbols
 
     if _SYMBOLS_HOSE_CACHE_PATH.exists():
         logger.warning("Using cached symbols from %s", _SYMBOLS_HOSE_CACHE_PATH)

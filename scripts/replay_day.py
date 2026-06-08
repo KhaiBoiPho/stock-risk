@@ -38,7 +38,7 @@ _TZ = ZoneInfo(VN_TIMEZONE)
 
 _EMOJI = {"explosion": "🔥", "warning": "⚠️ ", "critical": "🚨"}
 _LABEL = {"explosion": "EXPLOSION", "warning": "WARNING ", "critical": "CRITICAL"}
-_EXCH  = {"HOSE": "HSX", "HNX": "HNX", "UPCOM": "OTC"}
+_EXCH  = {"HOSE": "HoSE", "HNX": "HNX", "UPCOM": "UPCoM"}
 
 # Tất cả mốc check theo cron (hour in 9,10,11,13,14 × minute in 0,15,30,45)
 _ALL_SLOTS = [
