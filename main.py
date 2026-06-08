@@ -23,12 +23,18 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)-8s %(name)s  %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+# Tắt log từng HTTP request của httpx — quá ồn với 1500+ symbols/lần fetch
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 
 async def main() -> None:
     settings = get_settings()
     logging.getLogger().setLevel(settings.log_level.upper())
+
+    if not settings.telegram_bot_token or not settings.telegram_chat_id:
+        logger.warning("TELEGRAM_BOT_TOKEN hoặc TELEGRAM_CHAT_ID chưa được cấu hình — alerts sẽ không gửi được!")
 
     hose_symbols = await fetch_hose_symbols()
     logger.info("Loaded %d HoSE symbols", len(hose_symbols))

@@ -81,6 +81,10 @@ async def _check_one(
 
     vol_today, last_close = _parse_ohlcv(data)
 
+    if vol_today == 0:
+        logger.debug("Skip %s: DNSE returned vol=0 (no intraday data)", symbol)
+        return
+
     if not passes_liquidity_filter(vma9, last_close, s.min_vma9_volume, s.min_vma9_value):
         logger.debug("Skip %s: low liquidity (vma9=%.0f, price=%s)", symbol, vma9, last_close)
         return
@@ -91,6 +95,9 @@ async def _check_one(
 
     await store.set_vol_today(symbol, vol_today)
     await store.set_last_ratio(symbol, ratio)
+
+    logger.debug("%s  vol=%d  vma9=%.0f  elapsed=%d  ratio=%.2f",
+                 symbol, vol_today, vma9, elapsed, ratio)
 
     level = determine_alert_level(
         ratio, session_name,
@@ -140,6 +147,15 @@ async def run_check(
     logger.info("Checking %d symbols at %s (elapsed=%d min)", len(symbols), now.strftime("%H:%M"), elapsed)
     raw = await fetch_all_ohlcv(symbols, today_start_ts, now_ts, resolution="15")
     vma9_map = await store.get_all_vma9(symbols)
+
+    n_with_data  = sum(1 for d in raw.values() if d and d.get("t"))
+    n_with_vma9  = sum(1 for v in vma9_map.values() if v)
+    missing_vma9 = [s for s, v in vma9_map.items() if v is None]
+    if missing_vma9:
+        logger.warning("VMA9 missing for %d/%d symbols — will be skipped: %s",
+                       len(missing_vma9), len(symbols), missing_vma9[:20])
+    logger.info("Data OK: intraday=%d, vma9=%d / %d symbols", n_with_data, n_with_vma9, len(symbols))
+
     s = get_settings()
     ex_map = exchange_map or {}
 
