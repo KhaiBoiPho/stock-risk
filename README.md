@@ -32,26 +32,29 @@ Bot quét **toàn bộ cổ phiếu HoSE + HNX + UPCoM** mỗi 15 phút trong gi
 main.py
 ├── Startup: load symbols (HoSE/HNX/UPCoM), kết nối Redis, bootstrap VMA9
 ├── Scheduler (APScheduler)
-│   ├── 09:00 daily  → reset_daily()       [xoá vol_today:*, alerted:*]
+│   ├── 09:00 daily  → reset_daily()       [xoá vol_today:*, alerted:*, alerted_today]
 │   ├── mỗi 15 phút  → check_volume()      [lõi chính]
+│   ├── 14:46 daily  → eod_summary()       [tổng kết cuối phiên → rổ]
 │   └── 14:50 daily  → update_vma9()       [cập nhật VMA9 sau phiên]
 └── Signal handler (SIGINT/SIGTERM)
 
 src/
 ├── core/
-│   ├── checker.py   — logic kiểm tra ratio, quyết định alert level
-│   ├── session.py   — xác định phiên giao dịch, tính elapsed_minutes
-│   └── vma9.py      — tính và lưu VMA9 vào Redis
+│   ├── checker.py      — logic kiểm tra ratio, quyết định alert level
+│   ├── eod_summary.py  — tổng kết cuối phiên: scan toàn bộ mã → lọc spike + thanh khoản → rổ
+│   ├── session.py      — xác định phiên giao dịch, tính elapsed_minutes
+│   └── vma9.py         — tính và lưu VMA9 vào Redis
 ├── data/
 │   ├── dnse_client.py  — fetch OHLCV và danh sách mã từ API
-│   └── redis_store.py  — đọc/ghi Redis (VMA9, vol_today, alerted, last_ratio)
+│   └── redis_store.py  — đọc/ghi Redis (VMA9, vol_today, alerted, eod_basket)
 ├── alerts/
 │   ├── formatter.py — format tin nhắn Telegram (HTML)
 │   └── telegram.py  — gửi tin nhắn qua Telegram Bot API
 ├── jobs/
-│   ├── check.py     — wrapper gọi run_check()
+│   ├── check.py       — wrapper gọi run_check()
+│   ├── eod_summary.py — wrapper gọi run_eod_summary()
 │   ├── vma9_update.py — wrapper gọi update_vma9_all()
-│   └── reset.py     — xoá Redis keys theo ngày, gửi thông báo phiên mới
+│   └── reset.py       — xoá Redis keys theo ngày, gửi thông báo phiên mới
 └── config/
     ├── settings.py  — đọc .env qua pydantic-settings
     └── constants.py — SESSIONS, TOTAL_TRADING_MINUTES, URLs
@@ -126,7 +129,36 @@ ratio = vol_today / expected_vol
 
 > **Lưu ý:** ATO (09:00–09:15) **thực tế không bao giờ chạy** vì cron chỉ fire lúc :00/:15/:30/:45 và check lúc 09:00 có elapsed=0 (bị bỏ qua), check lúc 09:15 đã vào phiên MORNING. Đây là giới hạn thiết kế hiện tại.
 
-### 3.6 Alert Deduplication
+### 3.6 Tổng kết cuối phiên (EOD Summary)
+
+**Khi nào chạy:** 14:46 mỗi ngày (ngay sau ATC kết thúc, trước VMA9 update).
+
+**Luồng xử lý:**
+
+```
+1. Fetch OHLCV cuối ngày cho TOÀN BỘ mã (1,500+ symbols)
+2. Lấy VMA9 từ Redis
+3. Với mỗi mã:
+   a. Tính ratio = vol_today / VMA9
+   b. ratio < 2.0x → SKIP (không có spike)
+   c. Check EOD filter:
+      vol_today >= 1,000,000 cp → PASS
+      HOẶC vol_today × giá >= 10,000,000 (= 10 tỷ VND) → PASS
+   d. Cả spike + filter pass → VÀO RỔ
+4. Gửi Telegram bảng tổng kết + lưu rổ vào Redis
+```
+
+**Khác biệt với intraday alert:**
+- **Intraday**: dùng VMA9 liquidity filter (lọc theo trung bình 9 phiên) → có thể bỏ sót mã
+  thanh khoản thấp bình thường nhưng nổ bất thường
+- **EOD**: dùng actual vol/value cuối phiên → bắt được mã nổ volume bất thường
+  (ví dụ TTA: VMA9 chỉ 427K cp nhưng ngày nổ 3.8M cp = 42.7 tỷ)
+
+**Redis keys:**
+- `alerted_today` (SET) — mã đã trigger alert trong ngày, cleared daily
+- `eod_basket:{YYYY-MM-DD}` (SET) — rổ mã đạt ĐK, persistent
+
+### 3.7 Alert Deduplication
 
 ```
 Redis key: alerted:{symbol}:{level}   TTL = 600 giây (10 phút)
@@ -143,8 +175,9 @@ Với interval 15 phút và TTL 10 phút:
 
 | Cron | Job | Ghi chú |
 |------|-----|---------|
-| `09:00` | `reset_daily` | Xoá `vol_today:*` và `alerted:*`, gửi thông báo phiên mới |
+| `09:00` | `reset_daily` | Xoá `vol_today:*`, `alerted:*`, `alerted_today`, gửi thông báo phiên mới |
 | `*/15` trong giờ `9,10,11,13,14` | `check_volume` | Giờ 9: :00,:15,:30,:45 — giờ 12 không có |
+| `14:46` | `eod_summary` | Scan toàn bộ mã → lọc spike + thanh khoản → gửi tổng kết + lưu rổ |
 | `14:50` | `update_vma9` | Tính lại VMA9 dựa trên dữ liệu đến hôm qua |
 
 **Các lần check trong ngày:**
@@ -169,6 +202,8 @@ Với interval 15 phút và TTL 10 phút:
 | `vol_today:{symbol}` | String (int) | Xoá lúc 09:00 | Khối lượng tích lũy hôm nay |
 | `alerted:{symbol}:{level}` | String ("1") | 600 giây | Dedup alert — có key = đã alert gần đây |
 | `last_ratio:{symbol}` | String (float) | Không có | Ratio lần kiểm tra gần nhất (để theo dõi) |
+| `alerted_today` | Set | Xoá lúc 09:00 | Tập mã đã trigger alert trong ngày |
+| `eod_basket:{YYYY-MM-DD}` | Set | Không có | Rổ mã đạt ĐK cuối phiên (~46 KB/năm) |
 
 **Kiểm tra Redis thủ công:**
 ```bash
@@ -205,8 +240,10 @@ KEYS vma9:* | wc -l  (hoặc: DBSIZE)
 | `VMA9_MIN_DAYS` | 3 | Số ngày tối thiểu để tính VMA9 (bỏ qua nếu thiếu) |
 | `VMA9_LOOKBACK_DAYS` | 9 | Số phiên tính trung bình VMA9 |
 | `VMA9_HISTORY_FETCH_DAYS` | 25 | Khoảng thời gian fetch dữ liệu VMA9 |
-| `MIN_VMA9_VOLUME` | 1,000,000 | Lọc thanh khoản: VMA9 tối thiểu (cp/phiên) |
-| `MIN_VMA9_VALUE` | 10,000,000 | Lọc thanh khoản: giá trị tối thiểu (nghìn đồng×cp) |
+| `MIN_VMA9_VOLUME` | 1,000,000 | Lọc thanh khoản intraday: VMA9 tối thiểu (cp/phiên) |
+| `MIN_VMA9_VALUE` | 10,000,000 | Lọc thanh khoản intraday: giá trị tối thiểu (nghìn đồng×cp) |
+| `EOD_MIN_VOLUME` | 1,000,000 | EOD summary: vol thực tế tối thiểu (cp) |
+| `EOD_MIN_VALUE` | 10,000,000 | EOD summary: giá trị thực tế tối thiểu (nghìn đồng×cp = 10 tỷ) |
 | `DNSE_CONCURRENCY` | 20 | Số request song song đến DNSE |
 | `DNSE_TIMEOUT` | 10.0 | Timeout mỗi request DNSE (giây) |
 | `LOG_LEVEL` | INFO | DEBUG để xem chi tiết skip |
@@ -245,6 +282,22 @@ KEYS vma9:* | wc -l  (hoặc: DBSIZE)
       6. store.claim_alert(symbol, level, 600s)
          → False (key tồn tại): RETURN (đã alert gần đây)
       7. format_alert() + send_message() → Telegram
+      8. store.add_alerted_today(symbol) → ghi nhận vào set
+
+[14:46 — Tổng kết cuối phiên]
+  eod_summary(symbols, store, exchange_map)
+       ↓
+  run_eod_summary()
+    ├── fetch_all_ohlcv(ALL symbols, 09:00→now, resolution="15")
+    ├── store.get_all_vma9(ALL symbols)
+    └── với mỗi symbol:
+          1. vma9 = None → SKIP
+          2. vol_today, last_close từ OHLCV
+          3. ratio = vol_today / vma9 < 2.0x → SKIP
+          4. passes_eod_filter(vol_today, price, 1M cp, 10 tỷ) → False: SKIP
+          5. → VÀO RỔ
+    ├── store.set_eod_basket(symbols, date) → Redis
+    └── format_eod_summary() + send_message() → Telegram
 ```
 
 ---
@@ -419,6 +472,7 @@ stock-risk/
 ├── src/
 │   ├── core/
 │   │   ├── checker.py       — ⭐ LOGIC CHÍNH: ratio, filter, alert level
+│   │   ├── eod_summary.py   — tổng kết cuối phiên: scan all → spike + filter → rổ
 │   │   ├── session.py       — phiên giao dịch + elapsed_minutes
 │   │   └── vma9.py          — tính VMA9 từ daily OHLCV
 │   ├── data/
@@ -429,11 +483,15 @@ stock-risk/
 │   │   └── telegram.py      — gửi message
 │   ├── jobs/
 │   │   ├── check.py         — wrapper check_volume
+│   │   ├── eod_summary.py   — wrapper eod_summary
 │   │   ├── vma9_update.py   — wrapper update_vma9
 │   │   └── reset.py         — reset daily + thông báo phiên mới
 │   └── config/
 │       ├── settings.py      — đọc .env (pydantic-settings)
 │       └── constants.py     — SESSIONS, TOTAL_TRADING_MINUTES
+├── scripts/
+│   ├── replay_day.py        — replay cả ngày, in alert từng mốc 15p
+│   └── test_eod_summary.py  — test EOD filter với data DNSE thực
 └── tests/
     ├── test_checker.py
     ├── test_session.py
@@ -469,6 +527,27 @@ python scripts/replay_day.py 2026-06-06 TPB,VPB,MBB,ACB
 
 ---
 
+## Script Test EOD Summary
+
+Script `scripts/test_eod_summary.py` test filter tổng kết cuối phiên với data DNSE thực. **Không cần Redis hay Telegram.**
+
+```bash
+PYTHONPATH=. python scripts/test_eod_summary.py
+```
+
+**Output:**
+- Scan toàn bộ 1,500+ mã cho 3 ngày (Thu, Fri, Mon)
+- In danh sách mã đạt ĐK vào rổ (spike >= 2x + vol >= 1M cp or value >= 10 tỷ)
+- Highlight target symbols (LDG, AGG, TTA)
+- Ước tính Redis memory
+
+**Khi nào nên dùng:**
+- Kiểm tra EOD filter có bắt đúng mã khách hàng yêu cầu
+- Điều chỉnh ngưỡng EOD_MIN_VOLUME / EOD_MIN_VALUE
+- Verify trước khi deploy
+
+---
+
 ## Quy trình sửa logic alert
 
 Khi cần thay đổi thuật toán (ngưỡng, cách tính, thêm điều kiện):
@@ -484,3 +563,6 @@ Khi cần thay đổi thuật toán (ngưỡng, cách tính, thêm điều kiệ
 | Format tin nhắn Telegram | `src/alerts/formatter.py` |
 | Lịch chạy cron | `main.py` → `scheduler.add_job()` |
 | TTL dedup alert | `src/config/constants.py` → `ALERT_TTL_SECONDS` |
+| Ngưỡng EOD filter | `.env` → `EOD_MIN_VOLUME`, `EOD_MIN_VALUE` |
+| Logic tổng kết cuối phiên | `src/core/eod_summary.py` → `run_eod_summary()` |
+| Format tổng kết Telegram | `src/alerts/formatter.py` → `format_eod_summary()` |
