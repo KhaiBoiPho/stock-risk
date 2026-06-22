@@ -85,6 +85,79 @@ def format_startup(
     )
 
 
+_EXCHANGE_SHORT = {
+    "HOSE": "HSX",
+    "HNX": "HNX",
+    "UPCOM": "UPC",
+}
+
+
+def format_eod_summary(
+    qualified: list[dict],
+    total_scanned: int,
+    check_time: datetime,
+) -> str:
+    date_str = check_time.strftime("%d/%m/%Y")
+    time_str = check_time.strftime("%H:%M")
+
+    ew_sym = 6
+    ew_vol = 10
+    ew_gt  = 8
+    ew_rat = 6
+    ew_san = 4
+    erow_w = ew_sym + ew_vol + ew_gt + ew_rat + ew_san + 16
+
+    e_top  = "+" + "-" * erow_w + "+"
+    e_hsep = ("+" + "-" * (ew_sym + 2)
+              + "+" + "-" * (ew_vol + 2)
+              + "+" + "-" * (ew_gt + 2)
+              + "+" + "-" * (ew_rat + 2)
+              + "+" + "-" * (ew_san + 2) + "+")
+
+    def e_hdr(text: str) -> str:
+        return f"| {text:<{erow_w - 2}} |"
+
+    def e_row(sym: str, vol: str, gt: str, rat: str, san: str) -> str:
+        return (f"| {sym:<{ew_sym}} | {vol:>{ew_vol}} "
+                f"| {gt:>{ew_gt}} | {rat:>{ew_rat}} | {san:>{ew_san}} |")
+
+    if not qualified:
+        return (
+            f"📊 <b>Tong ket phien {date_str} — {time_str}</b>\n"
+            f"<pre>"
+            f"{e_top}\n"
+            f"{e_hdr(f'Quet {total_scanned:,} ma — 0 dat dieu kien')}\n"
+            f"{e_top}"
+            f"</pre>"
+        )
+
+    hdr_txt = f"Quet {total_scanned:,} ma — {len(qualified)} vao ro"
+
+    lines = [
+        f"📊 <b>Tong ket phien {date_str} — {time_str}</b>",
+        "<pre>",
+        e_top,
+        e_hdr(hdr_txt),
+        e_hsep,
+        e_row("Ma", "KL (cp)", "GT (ty)", "Ratio", "San"),
+        e_hsep,
+    ]
+
+    for q in sorted(qualified, key=lambda x: x.get("value_ty") or 0, reverse=True):
+        vol_str = f"{q['vol_today']:,}"
+        gt_str = f"{q['value_ty']:.1f}" if q.get("value_ty") else "N/A"
+        rat_str = f"{q['ratio']:.1f}x"
+        san_str = _EXCHANGE_SHORT.get(q["exchange"], q["exchange"])
+        lines.append(e_row(q["symbol"], vol_str, gt_str, rat_str, san_str))
+
+    lines.append(e_hsep)
+    lines.append(e_hdr(f"Tong: {len(qualified)} co phieu"))
+    lines.append(e_top)
+    lines.append("</pre>")
+
+    return "\n".join(lines)
+
+
 def format_alert(
     symbol: str,
     vol_today: int,

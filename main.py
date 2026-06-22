@@ -15,6 +15,7 @@ from src.core.vma9 import update_vma9_all
 from src.data.dnse_client import fetch_hose_symbols, fetch_hnx_symbols, fetch_upcom_symbols
 from src.data.redis_store import RedisStore
 from src.jobs.check import check_volume
+from src.jobs.eod_summary import eod_summary
 from src.jobs.reset import reset_daily
 from src.jobs.vma9_update import update_vma9
 
@@ -79,6 +80,16 @@ async def main() -> None:
         name="Volume check",
         misfire_grace_time=120,
         max_instances=1,
+    )
+
+    # 14:46 — EOD summary: filter alerted symbols by actual vol/value
+    scheduler.add_job(
+        eod_summary,
+        CronTrigger(hour=14, minute=46, timezone=VN_TIMEZONE),
+        args=[symbols, store, exchange_map],
+        id="eod_summary",
+        name="EOD summary",
+        misfire_grace_time=300,
     )
 
     # 14:50 — recalculate VMA9 after market close

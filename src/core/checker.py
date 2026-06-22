@@ -123,6 +123,7 @@ async def _check_one(
         exchange=exchange,
     )
     await send_message(text)
+    await store.add_alerted_today(symbol)
     logger.info("Alert sent: %s [%s] %s ratio=%.2f", symbol, exchange, level.value, ratio)
 
 

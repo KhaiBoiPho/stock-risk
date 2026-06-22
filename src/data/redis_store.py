@@ -78,6 +78,31 @@ class RedisStore:
         except Exception as exc:
             logger.error("set last_ratio:%s: %s", symbol, exc)
 
+    # --- EOD tracking ---
+
+    async def add_alerted_today(self, symbol: str) -> None:
+        try:
+            await self._r.sadd("alerted_today", symbol)
+        except Exception as exc:
+            logger.error("add_alerted_today %s: %s", symbol, exc)
+
+    async def get_alerted_today(self) -> set[str]:
+        try:
+            return await self._r.smembers("alerted_today")
+        except Exception as exc:
+            logger.error("get_alerted_today: %s", exc)
+            return set()
+
+    async def set_eod_basket(self, symbols: list[str], date_str: str) -> None:
+        try:
+            key = f"eod_basket:{date_str}"
+            if symbols:
+                await self._r.delete(key)
+                await self._r.sadd(key, *symbols)
+            logger.info("EOD basket %s: %d symbols", date_str, len(symbols))
+        except Exception as exc:
+            logger.error("set_eod_basket: %s", exc)
+
     # --- Daily reset ---
 
     async def reset_daily(self) -> None:
@@ -91,6 +116,8 @@ class RedisStore:
                         pipe.delete(k)
                     await pipe.execute()
                     deleted += len(keys)
+            await self._r.delete("alerted_today")
+            deleted += 1
             logger.info("Daily Redis keys cleared (%d keys)", deleted)
         except Exception as exc:
             logger.error("reset_daily: %s", exc)

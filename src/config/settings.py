@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     min_vma9_volume: int = 1_000_000     # 1 triệu cp/phiên
     min_vma9_value: int = 10_000_000     # 10 tỷ đồng/phiên (đơn vị: nghìn đồng × cp)
 
+    # EOD summary filter — actual vol/value cuối phiên (cùng đơn vị DNSE)
+    eod_min_volume: int = 1_000_000      # 1 triệu cp
+    eod_min_value: int = 10_000_000      # 10 tỷ đồng (nghìn đồng × cp)
+
     log_level: str = "INFO"
 
 
